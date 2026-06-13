@@ -59,8 +59,18 @@ const YAHOO_SYMBOLS = { ES: "ES=F", MES: "MES=F", NQ: "NQ=F", MNQ: "MNQ=F" };
 
 async function fetchCandles(symbol, interval, range) {
   const ySym = YAHOO_SYMBOLS[symbol] || "MES=F";
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ySym}?interval=${interval}&range=${range}`;
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  // Cache-buster: a changing query param forces Yahoo/CDN to return fresh data
+  // instead of a cached stale candle. This is the key fix for the frozen feed.
+  const bust = Date.now();
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ySym}?interval=${interval}&range=${range}&_=${bust}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+    },
+    cache: "no-store",
+  });
   const data = await res.json();
   const r = data?.chart?.result?.[0];
   if (!r) throw new Error("No chart data");
@@ -73,6 +83,15 @@ async function fetchCandles(symbol, interval, range) {
       open: q.open[i], high: q.high[i], low: q.low[i],
       close: q.close[i], volume: q.volume[i] || 0,
     });
+  }
+  // Staleness guard: log how old the newest candle is so the frozen-feed
+  // problem is visible in Railway logs instead of silently producing no trades.
+  if (candles.length) {
+    const newest = candles[candles.length - 1].time * 1000;
+    const ageMin = Math.round((Date.now() - newest) / 60000);
+    if (ageMin > 30) {
+      console.warn(`STALE FEED: newest ${symbol} ${interval} candle is ${ageMin} min old (${new Date(newest).toISOString()}). Market may be closed or Yahoo is lagging.`);
+    }
   }
   return candles;
 }
